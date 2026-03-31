@@ -303,7 +303,7 @@ RQ4 is designed to be used alongside these standards, not to replace them. The s
 ## 7. Reference Implementation
 
 - **Live demo:** https://rq4.dev
-- **GitHub:** [TBD]
+- **GitHub:** https://github.com/rozetyp/rq4
 
 The reference implementation is approximately 300 lines of TypeScript for core RQ4 analysis.
 
