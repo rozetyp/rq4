@@ -1,0 +1,30 @@
+{
+  "name": "rq4",
+  "version": "1.0.0",
+  "description": "RQ4: Request Context Fingerprinting — detect browser-impersonating bots via HTTP header context analysis",
+  "main": "src/rq4.ts",
+  "types": "src/rq4.ts",
+  "scripts": {
+    "test": "npx tsx test/run.ts"
+  },
+  "keywords": [
+    "bot-detection",
+    "fingerprinting",
+    "security",
+    "http-headers",
+    "sec-fetch",
+    "anti-bot",
+    "fraud-detection"
+  ],
+  "author": "AZ",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AZaytsev/rq4"
+  },
+  "homepage": "https://rq4.dev",
+  "devDependencies": {
+    "tsx": "^4.0.0",
+    "typescript": "^5.7.0"
+  }
+}
