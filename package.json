@@ -1,7 +1,7 @@
 {
   "name": "rq4",
-  "version": "1.0.0",
-  "description": "RQ4: Request Context Fingerprinting — detect browser-impersonating bots via HTTP header context analysis",
+  "version": "2.0.0",
+  "description": "RQ4: Request Context Fingerprinting — detect browser-impersonating bots via HTTP header context analysis. v2.0 adds RQ4-S session-level cookie-reuse detection.",
   "main": "src/rq4.ts",
   "types": "src/rq4.ts",
   "scripts": {

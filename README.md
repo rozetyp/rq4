@@ -42,6 +42,33 @@ Each dimension returns `v` (valid), `x` (impossible), or `-` (indeterminate).
 
 **Non-browser clients (curl, Python requests):** `----` — indeterminate, not flagged.
 
+## RQ4-S: Session-Level Extension (v2.0)
+
+RQ4-S correlates per-request RQ4 across a cookie session to catch the **cookie-reuse attack** — where a real browser solves a WAF challenge (Imperva reese84, Cloudflare Turnstile, F5 Shape, DataDome) and the resulting session cookies are transferred to an HTTP client (curl_cffi, etc.) for fast automated requests.
+
+Per-request RQ4 detects bot requests in isolation. RQ4-S detects the precise moment a session was hijacked — catching the handoff on the **first bot request** after cookie transfer, with **zero false positives** across all tested scenarios (Chrome, Firefox, Safari, Edge, WebView, Service Workers, native apps, header-stripping extensions).
+
+```typescript
+import { computeRQ4, rq4FromRequest } from './src/rq4';
+import { trackSession, getSessionId, CloudflareKVStore } from './src/rq4s';
+
+const rq4 = computeRQ4(rq4FromRequest(request));
+const sessionId = getSessionId(request.headers.get('cookie') ?? undefined);
+if (sessionId) {
+  const store = new CloudflareKVStore(env.RQ4S_SESSIONS);
+  const verdict = await trackSession(store, sessionId, rq4);
+  if (verdict.state === 'transition' || verdict.state === 'compromised') {
+    return new Response('Forbidden', { status: 403 });
+  }
+}
+```
+
+**Validated:** detected curl_cffi handoff on the first bot request against a production Imperva Incapsula reese84 deployment (April 2026). Imperva did not flag the same handoff.
+
+**Relationship to commercial WAFs:** Within-session behavioral scoring exists in closed-source products (e.g., DataDome's Agent Trust). RQ4-S formalizes one specific signal — RQ4 fingerprint transitions across a cookie session — as an open standard any deployment can implement without commercial licensing. Same relationship JA3 has to closed-source TLS-fingerprint products.
+
+See [SPEC.md §6](SPEC.md#6-session-level-extension-rq4-s) for the full specification, empirical results, and evasion analysis.
+
 ## Live Demo
 
 Check your own fingerprint: **https://rq4.dev**
@@ -68,6 +95,6 @@ RQ4 runs on any platform with access to HTTP headers:
 ## Citation
 
 ```
-RQ4: Request Context Fingerprinting. Version 1.0, March 2026.
+RQ4: Request Context Fingerprinting. Version 2.0, June 2026.
 AZ. https://rq4.dev
 ```

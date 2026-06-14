@@ -1,6 +1,6 @@
 # RQ4: Request Context Fingerprinting
 
-**Version 1.0 — March 2026**
+**Version 2.0 — June 2026**
 
 ## Abstract
 
@@ -9,6 +9,8 @@ RQ4 is a method for fingerprinting HTTP clients by analyzing whether request hea
 Modern browser impersonation tools can perfectly replicate browser TLS handshakes and header sets. However, these tools set headers statically at session creation and reuse them across all request types. Real browsers are state machines that dynamically generate headers based on request context — navigation vs. fetch, GET vs. POST, same-origin vs. cross-origin, user-activated vs. programmatic. RQ4 exploits this architectural gap.
 
 RQ4 defines four analysis dimensions and produces a compact fingerprint indicating which dimensions contain impossible states. A request that fails any RQ4 dimension was not produced by a standard browser — regardless of how convincing its TLS fingerprint or User-Agent string appears.
+
+**Version 2.0** introduces **RQ4-S** (Section 6) — a session-level extension that correlates per-request fingerprints across a cookie session to detect the cookie-reuse attack where a real browser solves a WAF challenge and the resulting session cookies are transferred to an HTTP client for subsequent requests. RQ4-S has zero false positives across all tested scenarios and catches the handoff on the first bot request after cookie transfer.
 
 ---
 
@@ -285,7 +287,148 @@ Browser extensions that modify or strip Sec-Fetch headers may reduce RQ4's abili
 
 ---
 
-## 6. Relationship to Other Standards
+## 6. Session-Level Extension (RQ4-S)
+
+RQ4-S extends per-request RQ4 analysis to **per-session correlation**, catching attacks where a real browser solves a JavaScript challenge and the resulting session cookies are transferred to an HTTP client for automated requests.
+
+### 6.1 Motivation
+
+Modern WAFs (Imperva Incapsula reese84, Cloudflare Turnstile, F5 Shape, DataDome) verify browsers via JavaScript challenges that produce session cookies. The standard bypass pattern:
+
+```
+1. Real browser (Playwright/Puppeteer) loads protected page
+2. WAF serves JS challenge
+3. Browser executes challenge, receives session cookies
+4. Attacker extracts cookies from browser context
+5. HTTP client (curl_cffi, requests, etc.) uses the transferred cookies for fast, repeated requests
+6. WAF accepts requests because cookies are valid
+```
+
+Step 6 is where current WAFs fail. The cookies are valid. The TLS fingerprint (with curl_cffi impersonation) matches Chrome. The User-Agent is identical. But the **HTTP request headers are contextually impossible** — the HTTP client uses a frozen navigation snapshot that doesn't adapt per-request.
+
+Per-request RQ4 catches the bot phase. RQ4-S correlates these signals across the session and identifies the precise transition point where a real browser session was hijacked.
+
+### 6.2 Specification
+
+For each request within a session:
+
+1. Compute the RQ4 fingerprint (Section 2)
+2. Extract the session identifier from origin-set cookies
+3. Look up the session's prior state (`clean` boolean, request count)
+4. Apply the following state machine:
+
+```
+state := lookup(session_id) or {clean: true, count: 0}
+state.count++
+
+if rq4 contains 'x' (impossible):
+  if state.clean and state.count > 1:
+    → TRANSITION DETECTED
+    state.clean = false
+    state.flagged_at = state.count
+  else if not state.clean:
+    → CONTINUED IMPOSSIBLE HEADERS IN FLAGGED SESSION
+
+else if rq4 contains only 'v' and '-':
+  → consistent with real browser
+
+persist(session_id, state, ttl = session_cookie_lifetime)
+```
+
+### 6.3 Session Identification
+
+Use existing WAF or origin session identifiers. Common patterns:
+
+| WAF / Platform | Session Cookies |
+|---|---|
+| Imperva Incapsula | `visid_incap_*` + `incap_ses_*` |
+| Cloudflare | `cf_clearance` + `__cf_bm` |
+| F5 Shape | `TS*` cookies |
+| Akamai | `_abck` + `bm_sz` |
+| Generic origin server | Any session cookie set by `Set-Cookie` |
+
+If multiple session cookies are present, the implementation should track each independently or hash their concatenation as a composite identifier.
+
+### 6.4 Empirical Validation
+
+A live test against a production US state government portal (protected by Imperva Incapsula reese84 with Advanced Bot Protection) was conducted in April 2026:
+
+```
+Request   Source       Method   RQ4    Flagged?
+─────────────────────────────────────────────────
+#1        Playwright   GET      -vv-   No
+#2        Playwright   GET      --v-   No
+#3        Playwright   GET      -vv-   No
+#4        Playwright   POST     --v-   No       ← reese84 challenge solution
+#5        Playwright   GET      -vv-   No       ← page reload after clearance
+#6        Playwright   POST     --v-   No       ← secondary challenge
+#7        Playwright   POST     -vv-   No       ← form search in browser
+#8        Playwright   POST     --v-   No       ← secondary challenge
+──── cookie handoff to curl_cffi ────
+#9        curl_cffi    POST     xxvx   YES <<<  ← FIRST bot request caught
+#10       curl_cffi    POST     xxvx   YES <<<  ← continued bot requests
+```
+
+The attack succeeded at the network level — curl_cffi retrieved business data using the transferred reese84 cookies. Imperva did not detect the handoff. RQ4-S detected the transition on the first bot request after cookie transfer.
+
+### 6.5 False Positive Testing
+
+| Scenario | Flagged? | Notes |
+|---|---|---|
+| Real browser full session (Chrome, Firefox, Safari, Edge) | No | All `v`/`-`, never `x` |
+| Android WebView session | No | WebView sends correct per-request headers |
+| Service Worker fetch after page navigation | No | SW correctly uses cors/empty for programmatic requests |
+| Browser extension strips Sec-Fetch headers | No | Stripped headers produce `-` (indeterminate), not `x` |
+| Native mobile app (no browser headers) | No | All `----`, no impossible values |
+
+Zero false positives across all tested scenarios.
+
+### 6.6 Evasion Analysis
+
+| Tool | Evades RQ4-S? | Notes |
+|---|---|---|
+| `curl_cffi` (default, any browser impersonation) | No — caught | Frozen navigation headers produce `x` on every programmatic request |
+| `requests` + custom headers (copied from browser) | No — caught | Same frozen-snapshot pattern |
+| Real headless browser for every request | Yes — no transition occurs | Defeats the cookie-reuse cost optimization (slow, expensive) |
+| Context-aware HTTP client (~400 LOC custom dispatch) | Yes — produces all `v`/`-` | Requires reimplementing browser request dispatch logic per-request |
+
+The evasion that defeats RQ4-S (context-aware dispatch) also defeats per-request RQ4. The relative cost of building it is high enough that no public scraping framework implements it by default.
+
+### 6.7 Implementation Notes
+
+**Storage per active session** (e.g., Cloudflare Workers KV, Redis, Postgres):
+
+```
+Key:   "rq4s:{hash(session_id)}"
+Value: {"clean": true, "count": 8}
+       or {"clean": false, "count": 10, "flagged_at": 9}
+TTL:   Match the session cookie lifetime
+```
+
+Approximately 100 bytes per session, single read + write per request.
+
+**Reference TypeScript implementation:** [src/rq4s.ts](src/rq4s.ts)
+
+**Performance** on Cloudflare Workers KV:
+- RQ4 computation: <0.1ms
+- KV read + write round-trip: 10-50ms
+- Total per-request overhead: under 50ms
+
+### 6.8 Detection Latency
+
+RQ4-S catches the handoff on the **first bot request** after cookie transfer. There is no warm-up period, no statistical accumulation, no model training. The signal is binary: either the session has produced only valid/indeterminate fingerprints (clean) or it has produced an impossible fingerprint (compromised).
+
+### 6.9 Relationship to Commercial Within-Session Scoring
+
+Commercial WAFs including DataDome implement within-session behavioral scoring through proprietary mechanisms — DataDome's Agent Trust score, for example, "updates in real time as behavior evolves" within a session. Cloudflare Bot Management and Akamai Bot Manager publish similar capability claims. The specific algorithms, signal weights, and detection criteria these vendors use are not disclosed.
+
+RQ4-S formalizes one specific signal in this space — RQ4 fingerprint transitions across a cookie session — as an **open standard** that any deployment can implement without commercial licensing. Its contribution is a defined detection criterion (impossible-state transition after a previously-clean session), a documented session-tracking algorithm (Section 6.2), and an empirical validation (Section 6.4) against a production Imperva Incapsula reese84 deployment that did not detect the specific handoff in our test.
+
+This is the same relationship JA3 has to commercial TLS-fingerprint-based detection: the technique class exists in closed-source products; the open spec lets independent defenders implement, audit, and extend it.
+
+---
+
+## 7. Relationship to Other Standards
 
 | Standard | Layer | Analyzes | Complementary to RQ4? |
 |---|---|---|---|
@@ -300,34 +443,28 @@ RQ4 is designed to be used alongside these standards, not to replace them. The s
 
 ---
 
-## 7. Reference Implementation
+## 8. Reference Implementation
 
 - **Live demo:** https://rq4.dev
 - **GitHub:** https://github.com/rozetyp/rq4
 
-The reference implementation is approximately 300 lines of TypeScript for core RQ4 analysis.
+The reference implementation is approximately 300 lines of TypeScript for per-request RQ4 analysis ([src/rq4.ts](src/rq4.ts)), plus a session-tracking module for RQ4-S ([src/rq4s.ts](src/rq4s.ts)).
 
 ---
 
-## 8. Future Work
+## 9. Future Work
 
-### 8.1 RQ4+ Extensions
-
-Following the JA4+ model, RQ4 can be extended to additional dimensions:
-
-- **RQ4-C (Cookie context):** SameSite cookie behavior vs. Sec-Fetch-Site consistency
-- **RQ4-R (Referer context):** Referrer-Policy compliance vs. actual Referer header presence
-- **RQ4-O (Origin context):** Origin header presence/absence vs. request mode and method
-- **RQ4-P (Preflight context):** CORS preflight consistency for cross-origin requests
-- **RQ4-H2 (HTTP/2 context):** Pseudo-header ordering and SETTINGS frame consistency with claimed browser
-
-### 8.2 Empirical Validity Matrix
+### 9.1 Empirical Validity Matrix
 
 The validity matrices in Section 2 are derived from the Fetch specification and verified against real browser behavior. A large-scale empirical study across diverse browser populations would strengthen the spec by identifying edge cases, extension-modified behavior, and WebView variations.
 
-### 8.3 Standard Identifier Format
+### 9.2 Standard Identifier Format
 
 A future version may define a compact hash format (similar to JA3/JA4 hashes) encoding the full set of header context signals into a single searchable string, enabling RQ4 fingerprints to be logged, shared, and correlated across deployments.
+
+### 9.3 Multi-Session Correlation
+
+RQ4-S currently tracks transitions within a single session. A future extension could correlate fingerprints across sessions originating from the same IP, ASN, or browser fingerprint cluster to detect coordinated cookie-farming operations where harvested cookies are distributed across many bot clients.
 
 ---
 
@@ -342,7 +479,7 @@ The RQ4 specification is released under Creative Commons Attribution 4.0 Interna
 ## Citation
 
 ```
-RQ4: Request Context Fingerprinting. Version 1.0, March 2026.
+RQ4: Request Context Fingerprinting. Version 2.0, June 2026.
 AZ.
 https://rq4.dev
 ```
