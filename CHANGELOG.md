@@ -2,6 +2,21 @@
 
 All notable changes to RQ4 are documented here. The project follows [Semantic Versioning](https://semver.org/).
 
+## [2.0.1] — 2026-06-16
+
+### Validated
+
+- **§6.6 evasion model independently confirmed.** The context-aware HTTP client architecture identified in v2.0.0 as the only effective RQ4-S bypass was empirically observed defeating unrelated top-tier commercial within-session bot detection products in production testing. The spec's symmetric prediction — same architecture defeats both RQ4-S and top-tier commercial within-session scoring — held in independent testing without coordinated effort.
+- See [SPEC.md §6.4.1](SPEC.md#641-evasion-symmetry--independent-commercial-confirmation) for the detailed methodology and result.
+- No spec or implementation changes; this is empirical confirmation of v2.0.0's evasion analysis from the bypass side.
+
+### Changed
+
+- Bumped package.json version `2.0.0 → 2.0.1`.
+- README "Validated" block reformatted as a bidirectional list (detection-side + evasion-side dates).
+
+---
+
 ## [2.0.0] — 2026-06-14
 
 ### Added

@@ -63,7 +63,10 @@ if (sessionId) {
 }
 ```
 
-**Validated:** detected curl_cffi handoff on the first bot request against a production Imperva Incapsula reese84 deployment (April 2026). Imperva did not flag the same handoff.
+**Validated, bidirectionally:**
+
+- *Detection (April 2026):* Caught a curl_cffi cookie-handoff on the first bot request against a production Imperva Incapsula reese84 deployment. Imperva did not flag the same handoff.
+- *Evasion model (June 2026):* The context-aware HTTP client architecture identified in [SPEC §6.6](SPEC.md#66-evasion-analysis) as the only effective RQ4-S bypass was independently observed defeating top-tier commercial within-session bot detection in production testing. The spec's symmetric prediction held — what defeats RQ4-S defeats top-tier commercial equivalents implementing the same signal class.
 
 **Relationship to commercial WAFs:** Within-session behavioral scoring exists in closed-source products (e.g., DataDome's Agent Trust). RQ4-S formalizes one specific signal — RQ4 fingerprint transitions across a cookie session — as an open standard any deployment can implement without commercial licensing. Same relationship JA3 has to closed-source TLS-fingerprint products.
 
