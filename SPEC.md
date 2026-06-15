@@ -371,6 +371,18 @@ Request   Source       Method   RQ4    Flagged?
 
 The attack succeeded at the network level — curl_cffi retrieved business data using the transferred reese84 cookies. Imperva did not detect the handoff. RQ4-S detected the transition on the first bot request after cookie transfer.
 
+### 6.4.1 Evasion Symmetry — Independent Top-Tier Commercial Confirmation
+
+In June 2026, the §6.6 "context-aware HTTP client" architecture — identified in this specification as the only effective bypass for RQ4-S — was implemented as the request layer of a generic HTTP scraper and applied against an unrelated top-tier commercial within-session bot detection deployment in production.
+
+Without the §6.6 architecture (the same scraper sending frozen-snapshot navigation headers across all requests, no Sec-Fetch-Site progression, no referrer chain, no per-session pacing), the deployment reliably blocked requests at the HTTP layer with high consistency — the pattern §6.1 describes.
+
+With the §6.6 architecture (Sec-Fetch-Site computed per-request from the referrer relationship, referrer chain threaded across same-domain requests, minimum inter-request interval), the same scraper through the same network path and the same TLS profile passed the deployment's detection with high consistency.
+
+This confirms the spec's symmetric model: the architecture identified as the only effective RQ4-S evasion is also effective against unrelated top-tier commercial within-session bot detection products. The underlying signal class — per-request context consistency across a session — is shared even when specific implementations and accumulator algorithms differ.
+
+The architectural cost gap remains the basis of the asymmetry. Implementing the bypass requires per-request dispatch logic — Sec-Fetch-Site computation from referrer relationship, referrer chain tracking, session-level pacing — that no public scraping framework ships by default. The architecture must be deliberately built. This is the same property §6.6 names and the reason RQ4-S detection persists in practice despite the bypass being publicly documented.
+
 ### 6.5 False Positive Testing
 
 | Scenario | Flagged? | Notes |
