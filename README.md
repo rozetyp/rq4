@@ -72,6 +72,12 @@ if (sessionId) {
 
 See [SPEC.md §6](SPEC.md#6-session-level-extension-rq4-s) for the full specification, empirical results, and evasion analysis.
 
+## Auxiliary Signals
+
+Optional checks that layer on additional signal **without** affecting the core fingerprint or its zero-false-positive guarantee:
+
+- **Encoding Coherence** (`encodingCoherence`) — checks a client's advertised `Accept-Encoding` against the Chromium version it claims (Chrome enabled `zstd` by default in v123). Catches unsophisticated impersonation, e.g. a browser User-Agent on a plain HTTP client; the inverse case (an old-version claim advertising `zstd`) has no known false positives. Being a static-header check, it is evaded by tooling that keeps `Accept-Encoding` current. See [SPEC.md Appendix A](SPEC.md#appendix-a-auxiliary-signals).
+
 ## Live Demo
 
 Check your own fingerprint: **https://rq4.dev**

@@ -2,6 +2,19 @@
 
 All notable changes to RQ4 are documented here. The project follows [Semantic Versioning](https://semver.org/).
 
+## [2.0.2] — 2026-09-18
+
+### Added
+
+- **Auxiliary signal: Encoding Coherence** ([SPEC.md Appendix A.1](SPEC.md#a1-encoding-coherence)). A supplementary check — deliberately **not** part of the M·U·I·T fingerprint — comparing the Chromium version a client claims against whether it advertises Zstandard (`zstd`) in `Accept-Encoding`. Chromium enabled `zstd` by default in v123 (v117 and earlier never sent it; v118–122 behind an off-by-default flag), and only over HTTPS. Exposed as `encodingCoherence(input)` in the reference implementation, returning `consistent | inconsistent | indeterminate` with a signal name and confidence.
+  - Inverse rule (claims Chromium ≤117 yet advertises `zstd`): impossible — no known false positives.
+  - Forward rule (claims Chromium ≥123 yet omits `zstd`): very-low false positives; advisory where an HTTPS context can't be assumed (enterprise policy, some Chromium forks, and plain HTTP can legitimately omit it). Catches unsophisticated impersonation (a browser UA on a plain HTTP client); evaded by tooling that keeps `Accept-Encoding` current.
+- Auxiliary test vectors, including a regression case proving real Chrome ≤122 without `zstd` is **not** flagged.
+
+### Notes
+
+- No change to the core four-dimension fingerprint, to `computeRQ4`, or to RQ4-S. The specification version remains 2.0; this is an additive reference-implementation utility documented as Appendix A.
+
 ## [2.0.1] — 2026-06-16
 
 ### Validated

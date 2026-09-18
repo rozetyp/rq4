@@ -480,6 +480,32 @@ RQ4-S currently tracks transitions within a single session. A future extension c
 
 ---
 
+## Appendix A: Auxiliary Signals
+
+Auxiliary signals are supplementary checks that are **not** part of the four-dimension RQ4 fingerprint. An implementation may layer them on for additional signal, but they do not affect the `MUIT` fingerprint or its false-positive guarantees. Unlike the fingerprint dimensions — which exploit per-request context that static header copying gets wrong — auxiliary signals may compare static values and are therefore more easily evaded.
+
+### A.1 Encoding Coherence
+
+Compares the Chromium version a client claims (from `Sec-CH-UA` brand versions, or the `Chrome`/`Edg` User-Agent token) against whether it advertises Zstandard (`zstd`) in `Accept-Encoding`.
+
+**Basis.** Chrome/Chromium enabled `zstd` by default in **version 123**; version 117 and earlier never sent it, and versions 118–122 shipped it behind an off-by-default flag. `zstd` is advertised only in secure (HTTPS) contexts. This is Chromium-specific: Firefox's threshold differs, and Safari does not advertise `zstd` even at version 18 — so the check applies only to clients that positively claim Chromium.
+
+**Rules.**
+
+| Condition | Verdict | Confidence |
+|---|---|---|
+| Claims Chromium ≤ 117 and `Accept-Encoding` contains `zstd` | inconsistent | High — `zstd` did not exist in these versions; a real browser cannot produce this. |
+| Claims Chromium ≥ 123 and `Accept-Encoding` omits `zstd` | inconsistent | Moderate — expected of default Google Chrome over HTTPS, but a real browser can legitimately omit it: over plain HTTP, under enterprise policy (`ZstdContentEncodingEnabled=Disabled`), or on any Chromium build or fork (Edge, Opera, Brave, Samsung Internet, Android WebView, embedded runtimes) that reports a ≥123 Chromium version without default `zstd` enabled. Treat this direction as advisory, not a positive detection. |
+| Chromium 118–122 (flag band), a consistent pairing, a non-Chromium client, or no `Accept-Encoding` | not reported | — |
+
+**Limitations.** This is a static-header check, defeated by tooling that keeps its `Accept-Encoding` consistent with the version it claims (for example, current `curl_cffi` impersonation profiles advertise `zstd`). It is most useful against unsophisticated impersonation: a browser User-Agent on a plain HTTP client, or a hardcoded modern `Accept-Encoding` rotated onto an old User-Agent. The inverse rule has no known false positives; the forward rule is very-low-FP and should be treated as advisory where an HTTPS context cannot be assumed.
+
+**Header normalization.** Some CDNs and reverse proxies normalize `Accept-Encoding` before it reaches application code. Implementations must read the original client value where the platform preserves it, or treat the check as indeterminate; evaluating a normalized value produces false positives.
+
+The reference implementation exposes this as `encodingCoherence(input)`, returning `consistent | inconsistent | indeterminate` with a signal name and confidence. It is intentionally separate from `computeRQ4`.
+
+---
+
 ## Authors
 
 AZ

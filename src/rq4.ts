@@ -497,6 +497,122 @@ export const TEST_VECTORS: Array<{ name: string; input: RQ4Input; expected: stri
   },
 ];
 
+// ─── Auxiliary signal: Encoding Coherence (NOT part of the M·U·I·T fingerprint) ─
+//
+// A supplementary check comparing the Chromium version a client CLAIMS against
+// whether it advertises Zstandard ("zstd") in Accept-Encoding. Unlike the four
+// fingerprint dimensions — which exploit per-request context that static header
+// copying gets wrong — this compares two STATIC values (a version claim and a
+// static header), so it is inherently copyable: a tool that keeps its
+// Accept-Encoding consistent with the version it claims is not flagged. It is
+// deliberately kept OUT of computeRQ4 so it never affects the core fingerprint or
+// its false-positive guarantees. Use it, if at all, as a low-weight side signal.
+//
+// Ground truth (verified against real per-version browser behaviour):
+//   * Chromium enabled zstd by DEFAULT in v123. v117 and earlier never sent it;
+//     v118-122 shipped it behind an off-by-default flag (either state is legal).
+//   * zstd is advertised only in secure (HTTPS) contexts.
+//   * Non-Chromium browsers are out of scope: Firefox's threshold differs and
+//     Safari does not advertise zstd even at v18. The check applies only to
+//     clients that positively claim Chromium.
+//
+// Two coherence violations, with different confidence:
+//   * inverse (zero false positives): claims Chromium <= 117 yet advertises zstd
+//     — impossible; zstd did not exist in those versions.
+//   * forward (very low false positives): claims Chromium >= 123 yet omits zstd
+//     — caught: a browser UA on a plain HTTP client. Evaded: tooling that keeps
+//     Accept-Encoding current. Real-browser residuals: enterprise policy
+//     (ZstdContentEncodingEnabled=Disabled), some Chromium forks, and plain-HTTP
+//     requests — callers that cannot assume HTTPS should treat forward as advisory.
+//   * v118-122, consistent pairings, non-Chromium, or no Accept-Encoding →
+//     no violation reported.
+//
+// CAVEAT: pass the ORIGINAL client Accept-Encoding. CDNs/proxies that normalize
+// it (e.g. to "gzip, br") make this check meaningless — treat as indeterminate
+// where the original value is unavailable.
+
+export interface EncodingCoherenceResult {
+  verdict: 'consistent' | 'inconsistent' | 'indeterminate';
+  signal?: 'chromium_le117_unexpected_zstd' | 'chromium_ge123_missing_zstd';
+  confidence?: 'high' | 'moderate';
+  reason?: string;
+}
+
+function chromiumMajorVersion(headers: Record<string, string>): number | null {
+  let major: number | null = null;
+
+  // Prefer Sec-CH-UA brand versions (Chromium / Google Chrome / Microsoft Edge);
+  // the "Not/A)Brand" GREASE entry is excluded by the allowlist.
+  const secChUa = headers['sec-ch-ua'] || '';
+  const brandRe = /"(?:chromium|google chrome|microsoft edge)";\s*v="(\d+)"/gi;
+  let m: RegExpExecArray | null;
+  while ((m = brandRe.exec(secChUa)) !== null) {
+    const v = parseInt(m[1], 10);
+    if (!Number.isNaN(v) && (major === null || v > major)) major = v;
+  }
+  if (major !== null) return major;
+
+  // Fall back to the UA Chrome/Edg token (excludes Firefox, Safari, iOS CriOS/EdgiOS).
+  const ua = (headers['user-agent'] || '').toLowerCase();
+  const uaMatch = ua.match(/(?:chrome|edg)\/(\d+)/);
+  if (uaMatch) {
+    const v = parseInt(uaMatch[1], 10);
+    if (!Number.isNaN(v)) return v;
+  }
+  return null;
+}
+
+export function encodingCoherence(input: RQ4Input): EncodingCoherenceResult {
+  const headers: Record<string, string> = {};
+  for (const [k, v] of Object.entries(input.headers)) headers[k.toLowerCase()] = v;
+
+  const acceptEncoding = headers['accept-encoding'];
+  if (!acceptEncoding) {
+    return { verdict: 'indeterminate', reason: 'no Accept-Encoding to evaluate' };
+  }
+  const chromiumMajor = chromiumMajorVersion(headers);
+  if (chromiumMajor === null) {
+    return { verdict: 'indeterminate', reason: 'client does not positively claim Chromium' };
+  }
+  const hasZstd = acceptEncoding.toLowerCase().includes('zstd');
+
+  if (chromiumMajor <= 117 && hasZstd) {
+    return {
+      verdict: 'inconsistent',
+      signal: 'chromium_le117_unexpected_zstd',
+      confidence: 'high',
+      reason: `Chromium ${chromiumMajor} predates zstd (default since v123) but Accept-Encoding advertises it`,
+    };
+  }
+  if (chromiumMajor >= 123 && !hasZstd) {
+    return {
+      verdict: 'inconsistent',
+      signal: 'chromium_ge123_missing_zstd',
+      confidence: 'moderate',
+      reason: `Chromium ${chromiumMajor} advertises zstd by default over HTTPS but Accept-Encoding omits it`,
+    };
+  }
+  return { verdict: 'consistent' };
+}
+
+// Auxiliary test vectors for encodingCoherence (verdict-level; run by runTestVectors).
+export const ENCODING_TEST_VECTORS: Array<{ name: string; input: RQ4Input; expected: EncodingCoherenceResult['verdict'] }> = [
+  // Real Chrome 123+ advertising zstd → consistent
+  { name: 'real_chrome_123_with_zstd', input: { method: 'GET', headers: { 'accept-encoding': 'gzip, deflate, br, zstd', 'sec-ch-ua': '"Chromium";v="123", "Google Chrome";v="123"', 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36' }, hasBody: false }, expected: 'consistent' },
+  // Real Chrome 120 with NO zstd (regression: real Chrome ≤120 never sent zstd) → consistent, must NOT be flagged
+  { name: 'real_chrome_120_no_zstd', input: { method: 'GET', headers: { 'accept-encoding': 'gzip, deflate, br', 'sec-ch-ua': '"Chromium";v="120", "Google Chrome";v="120"', 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' }, hasBody: false }, expected: 'consistent' },
+  // Flag band: Chrome 118 with zstd (flag on) → consistent, either state legal in 118-122
+  { name: 'flag_band_chrome_118_with_zstd', input: { method: 'GET', headers: { 'accept-encoding': 'gzip, deflate, br, zstd', 'sec-ch-ua': '"Chromium";v="118", "Google Chrome";v="118"', 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36' }, hasBody: false }, expected: 'consistent' },
+  // Forward: claims Chrome 136 (≥123) but no zstd (naive Chrome-UA-on-plain-lib) → inconsistent
+  { name: 'forward_chrome_136_no_zstd', input: { method: 'GET', headers: { 'accept-encoding': 'gzip, deflate', 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36' }, hasBody: false }, expected: 'inconsistent' },
+  // Inverse: claims Chrome 95 (≤117) but advertises zstd → inconsistent (zero-FP direction)
+  { name: 'inverse_chrome_95_with_zstd', input: { method: 'GET', headers: { 'accept-encoding': 'gzip, deflate, br, zstd', 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/95.0.4638.69 Safari/537.36' }, hasBody: false }, expected: 'inconsistent' },
+  // Non-Chromium (Firefox) → indeterminate (out of scope)
+  { name: 'firefox_not_chromium', input: { method: 'GET', headers: { 'accept-encoding': 'gzip, deflate, br', 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:137.0) Gecko/20100101 Firefox/137.0' }, hasBody: false }, expected: 'indeterminate' },
+  // No Accept-Encoding (e.g. normalized away) → indeterminate
+  { name: 'no_accept_encoding', input: { method: 'GET', headers: { 'sec-ch-ua': '"Chromium";v="146", "Google Chrome";v="146"', 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36' }, hasBody: false }, expected: 'indeterminate' },
+];
+
 // ─── Test Runner ────────────────────────────────────────────────────────────
 
 export function runTestVectors(): { passed: number; failed: number; results: string[] } {
@@ -519,6 +635,19 @@ export function runTestVectors(): { passed: number; failed: number; results: str
       for (const [dim, res] of Object.entries(result.dimensions)) {
         results.push(`  ${dim}: ${res.code} ${res.signals.length > 0 ? '(' + res.signals.join(', ') + ')' : ''}`);
       }
+    }
+  }
+
+  // Auxiliary: Encoding Coherence vectors (verdict-level; not part of the fingerprint)
+  for (const vector of ENCODING_TEST_VECTORS) {
+    const result = encodingCoherence(vector.input);
+    const ok = result.verdict === vector.expected;
+    if (ok) {
+      passed++;
+      results.push(`✓ [aux] ${vector.name}: ${result.verdict}${result.signal ? ' (' + result.signal + ')' : ''}`);
+    } else {
+      failed++;
+      results.push(`✗ [aux] ${vector.name}: expected ${vector.expected}, got ${result.verdict}`);
     }
   }
 
